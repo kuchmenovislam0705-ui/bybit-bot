@@ -101,11 +101,12 @@ def _get_klines(symbol: str, interval: str, limit: int) -> list:
 
 
 def _session_bonus_forex(utc_hour: int) -> int:
-    """Сессионный бонус для форекс/индексов."""
-    if 12 <= utc_hour < 17:  return 2   # Лондон+NY overlap — пик ликвидности
-    if 7  <= utc_hour < 12:  return 1   # Лондон
-    if 17 <= utc_hour < 21:  return 1   # NY
-    return 0                             # Азия — низкая ликвидность
+    """Сессионный бонус для форекс пар."""
+    if 12 <= utc_hour < 17:  return 3   # Лондон+NY overlap — абсолютный пик
+    if 7  <= utc_hour < 12:  return 2   # Лондон — основная форекс сессия
+    if 17 <= utc_hour < 21:  return 1   # NY late
+    if 0  <= utc_hour < 3:   return 1   # Токио — JPY пары активны
+    return 0                             # Мёртвая зона
 
 
 def _session_bonus_index(utc_hour: int) -> int:
@@ -411,36 +412,51 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         if data is None:
             continue
 
-        # ── ADX фильтр — порог зависит от сессии ────────────────────────────
-        adx = float(data.get("adx") or 0.0)
-        if adx < adx_thresh:
-            logger.debug(f"{symbol} пропуск ADX={adx:.1f} < {adx_thresh}")
-            continue
+        is_tv   = symbol in config.TV_ONLY_SYMBOLS
+        is_fx   = symbol in config.FOREX_SYMBOLS
+        is_idx  = symbol in config.INDEX_SYMBOLS
 
-        # ── ATR минимум — рынок должен двигаться ────────────────────────────
-        # < 0.05% = мёртвый рынок, скальп нецелесообразен (для XAU ~$1.6)
+        adx     = float(data.get("adx") or 0.0)
         atr_pct = float(data.get("atr_pct") or 0.0)
-        if atr_pct < 0.05:
-            logger.debug(f"{symbol} пропуск ATR%={atr_pct:.3f}% < 0.05%")
-            continue
+        rvol    = float(data.get("rvol") or 1.0)
 
-        # ── RVOL минимум — нужен хотя бы минимальный объём ──────────────────
-        rvol = float(data.get("rvol") or 1.0)
-        if rvol < 0.55:
-            logger.debug(f"{symbol} пропуск RVOL={rvol:.2f} < 0.55")
-            continue
+        # ── Форекс: свои пороги (ADX/ATR структурно ниже чем у крипто) ──────
+        if is_fx:
+            if adx < config.FOREX_MIN_ADX:
+                logger.debug(f"{symbol} пропуск ADX={adx:.1f} < {config.FOREX_MIN_ADX}")
+                continue
+            if atr_pct < config.FOREX_ATR_MIN:
+                logger.debug(f"{symbol} пропуск ATR%={atr_pct:.4f}% < {config.FOREX_ATR_MIN}%")
+                continue
+            # TV тик-объём для форекс ненадёжен → не фильтруем по RVOL
+        else:
+            # ── ADX фильтр (крипто / металлы / индексы) ──────────────────────
+            if adx < adx_thresh:
+                logger.debug(f"{symbol} пропуск ADX={adx:.1f} < {adx_thresh}")
+                continue
+            # ── ATR минимум ───────────────────────────────────────────────────
+            if atr_pct < 0.015:
+                logger.debug(f"{symbol} пропуск ATR%={atr_pct:.3f}% < 0.015%")
+                continue
+            # ── RVOL минимум ──────────────────────────────────────────────────
+            if rvol < 0.45:
+                logger.debug(f"{symbol} пропуск RVOL={rvol:.2f} < 0.45")
+                continue
 
         price   = data["price"]
         atr     = data["atr_abs"]
         sl_dist = atr * config.SL_ATR_MULT
         tp_dist = sl_dist * config.TP_RR
+        # Форекс: цена нужна с 5 знаками (0.56538), JPY — с 3, индексы — с 1
+        if is_fx:
+            _p_dec = 3 if symbol == "USDJPY" else 5
+        elif is_idx:
+            _p_dec = 1
+        else:
+            _p_dec = 2
         pivots  = data.get("pivots", {}) or {}
         vwap    = data.get("vwap")
         diverg  = data.get("divergence", "none")
-
-        is_tv   = symbol in config.TV_ONLY_SYMBOLS
-        is_fx   = symbol in config.FOREX_SYMBOLS
-        is_idx  = symbol in config.INDEX_SYMBOLS
 
         # Сессионный бонус по типу инструмента
         if is_fx:
@@ -467,8 +483,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         else:
             news_bonus = 0
 
-        # RVOL бонус (жёсткий фильтр < 0.55 уже выше)
-        rvol_bonus = 1 if rvol >= 1.5 else (-1 if rvol < 0.7 else 0)
+        # RVOL бонус: форекс пропускаем (TV тик-объём ненадёжен)
+        rvol_bonus = 0 if is_fx else (1 if rvol >= 1.5 else (-1 if rvol < 0.7 else 0))
 
         # Orderbook (только Bybit)
         ob_imb = float(data.get("ob_imbalance") or 0.5)
@@ -508,9 +524,10 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         rsi = float(data.get("rsi") or 50)
 
         # ── ЛОНГ ─────────────────────────────────────────────────────────────
-        # RSI < 60: не входим в уже перекупленный рынок (65 — слишком поздно)
-        trend_ok_l = (trend_1h == 1) or (trend_4h == 1 and trend_1h >= 0)
-        rsi_ok_l   = rsi < 60
+        min_score  = config.FOREX_MIN_SCORE if is_fx else score_thresh
+        # Форекс: тренд-фильтр мягче — достаточно нейтрального 15M
+        trend_ok_l = (trend_1h >= 0) if is_fx else ((trend_1h == 1) or (trend_4h == 1 and trend_1h >= 0))
+        rsi_ok_l   = rsi < 65
 
         if trend_ok_l and rsi_ok_l:
             daily_b_l = 2 if daily_trend == 1 else (-1 if daily_trend == -1 else 0)
@@ -519,7 +536,7 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
             total = (long_ta + max(0, geo_bonus) + c_long + m_long
                      + piv_long + vwap_long + div_long + sess_b
                      + daily_b_l + rvol_bonus + ob_b_l + news_bonus + tv_b_l)
-            if total >= score_thresh:
+            if total >= min_score:
                 sig = data.copy()
                 sig.update({
                     "direction":      "Buy",
@@ -547,8 +564,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                     "grade":          _grade(total),
                     "corr_data":      corr_data,
                     "macro_data":     macro_data,
-                    "suggested_sl":   round(price - sl_dist, 2),
-                    "suggested_tp":   round(price + tp_dist, 2),
+                    "suggested_sl":   round(price - sl_dist, _p_dec),
+                    "suggested_tp":   round(price + tp_dist, _p_dec),
                 })
                 longs.append(sig)
                 tv_str = f" tv={tv_b_l:+d}" if tv_b_l != 0 else ""
@@ -562,9 +579,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                 )
 
         # ── ШОРТ ─────────────────────────────────────────────────────────────
-        # RSI > 40: не входим в уже перепроданный рынок (35 — слишком поздно)
-        trend_ok_s = (trend_1h == -1) or (trend_4h == -1 and trend_1h <= 0)
-        rsi_ok_s   = rsi > 40
+        trend_ok_s = (trend_1h <= 0) if is_fx else ((trend_1h == -1) or (trend_4h == -1 and trend_1h <= 0))
+        rsi_ok_s   = rsi > 35
 
         if trend_ok_s and rsi_ok_s:
             daily_b_s  = 2 if daily_trend == -1 else (-1 if daily_trend == 1 else 0)
@@ -574,7 +590,7 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
             total = (short_ta + max(0, -geo_bonus) + c_short + m_short
                      + piv_short + vwap_short + div_short + sess_b
                      + daily_b_s + rvol_bonus + ob_b_s + news_b_s + tv_b_s)
-            if total >= score_thresh:
+            if total >= min_score:
                 sig = data.copy()
                 sig.update({
                     "direction":      "Sell",
@@ -602,8 +618,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                     "grade":          _grade(total),
                     "corr_data":      corr_data,
                     "macro_data":     macro_data,
-                    "suggested_sl":   round(price + sl_dist, 2),
-                    "suggested_tp":   round(price - tp_dist, 2),
+                    "suggested_sl":   round(price + sl_dist, _p_dec),
+                    "suggested_tp":   round(price - tp_dist, _p_dec),
                 })
                 shorts.append(sig)
                 tv_str = f" tv={tv_b_s:+d}" if tv_b_s != 0 else ""
