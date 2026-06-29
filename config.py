@@ -27,17 +27,20 @@ TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Инструменты ───────────────────────────────────────────────────────────────
-# XAU/XAG: 24/5 — только рабочие дни (пн-пт), спот-рынок закрыт на выходных
-# Крипто:  24/7 — без ограничений по времени
-#
-# Логика выбора:
-#   ETHUSDT  — #2 по капитализации, коррелирует с NASDAQ, лучший объём
-#   SOLUSDT  — топ-5, отличная волатильность, популярен у скальперов
-#   BNBUSDT  — стабильный, менее шумный, хорошие тренды
-#   XRPUSDT  — огромный объём в трендах, быстрые движения
-SIGNAL_INSTRUMENTS = ["XAUUSDT", "XAGUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+# Bybit-инструменты (OHLCV + ордербук через Bybit API)
 COMMODITY_SYMBOLS  = ["XAUUSDT", "XAGUSDT"]
 ALTCOIN_SYMBOLS    = ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+
+# TV-only инструменты (данные только через TradingView, торговля вручную)
+INDEX_SYMBOLS = ["NAS100", "SPX500"]
+FOREX_SYMBOLS = ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
+TV_ONLY_SYMBOLS = INDEX_SYMBOLS + FOREX_SYMBOLS
+
+SIGNAL_INSTRUMENTS = (
+    ["XAUUSDT", "XAGUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+    + INDEX_SYMBOLS
+    + FOREX_SYMBOLS
+)
 
 # ── Скальпинг-параметры ───────────────────────────────────────────────────────
 SL_ATR_MULT  = 1.5    # ATR × 1.5 — тайтовый стоп для скальпа

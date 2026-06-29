@@ -9,10 +9,22 @@ import config
 
 logger = logging.getLogger("notifications")
 
-_EMOJI  = {"XAUUSDT": "🥇", "XAGUSDT": "🥈", "BTCUSDT": "₿",
-           "ETHUSDT": "Ξ",  "SOLUSDT": "◎"}
-_NAME   = {"XAUUSDT": "ЗОЛОТО", "XAGUSDT": "СЕРЕБРО", "BTCUSDT": "БИТКОИН",
-           "ETHUSDT": "ЭФИРИУМ", "SOLUSDT": "СОЛАНА"}
+_EMOJI  = {
+    "XAUUSDT": "🥇", "XAGUSDT": "🥈", "BTCUSDT": "₿",
+    "ETHUSDT": "Ξ",  "SOLUSDT": "◎",
+    "NAS100":  "📊", "SPX500":  "📈",
+    "EURUSD":  "🇪🇺", "USDJPY": "🇯🇵", "GBPUSD": "🇬🇧",
+    "AUDUSD":  "🇦🇺", "USDCAD": "🇨🇦", "USDCHF": "🇨🇭",
+    "NZDUSD":  "🇳🇿",
+}
+_NAME   = {
+    "XAUUSDT": "ЗОЛОТО",   "XAGUSDT": "СЕРЕБРО",  "BTCUSDT": "БИТКОИН",
+    "ETHUSDT": "ЭФИРИУМ",  "SOLUSDT": "СОЛАНА",
+    "NAS100":  "NASDAQ 100", "SPX500": "S&P 500",
+    "EURUSD":  "EUR/USD",  "USDJPY":  "USD/JPY",  "GBPUSD":  "GBP/USD",
+    "AUDUSD":  "AUD/USD",  "USDCAD":  "USD/CAD",  "USDCHF":  "USD/CHF",
+    "NZDUSD":  "NZD/USD",
+}
 
 # Пары корреляций для каждого инструмента
 _CORR_PAIRS = {
@@ -60,6 +72,10 @@ def _fmt(sym: str, p: float) -> str:
     if sym == "BTCUSDT": return f"${p:,.0f}"
     if sym == "ETHUSDT": return f"${p:,.2f}"
     if sym == "SOLUSDT": return f"${p:,.3f}"
+    if sym in ("NAS100", "SPX500"): return f"{p:,.1f}"
+    if sym == "USDJPY":  return f"{p:.3f}"
+    if sym in ("EURUSD","GBPUSD","AUDUSD","NZDUSD"): return f"{p:.5f}"
+    if sym in ("USDCAD","USDCHF"): return f"{p:.5f}"
     return f"{p:.4f}"
 
 
@@ -172,15 +188,21 @@ def send_signal(signal: dict) -> None:
     pivots  = signal.get("pivots", {})
     rvol    = signal.get("rvol", 1.0)
 
+    is_tv = signal.get("tv_only", False)
+    sig_type = signal.get("signal_type", "BTC")
+    type_label = {"FX": "ФОРЕКС", "IDX": "ИНДЕКС", "COMM": "МЕТАЛЛ", "BTC": "КРИПТО"}.get(sig_type, "")
     sess_line = f"  {sess_nm}" if sess_nm else ""
+    tv_note = "\n⚠️ <i>TV-сигнал — торговать через TradingView / брокера</i>" if is_tv else ""
+
     lines = [
-        f"{grade} {emoji} <b>{name} — {dlbl}  [СКАЛЬП 15M]{sess_line}</b>",
+        f"{grade} {emoji} <b>{name} — {dlbl}  [{type_label} 15M]{sess_line}</b>",
         f"<i>{_GRADE_LABEL.get(grade, '')}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💰 Цена:       <code>{_fmt(sym, price)}</code>",
         f"🛑 Стоп:       <code>{_fmt(sym, sl)}</code>  <i>(-{sl_pct:.2f}%)</i>",
         f"🎯 Цель ({config.TP_RR}R): <code>{_fmt(sym, tp)}</code>  <i>(+{tp_pct:.2f}%)</i>",
         f"📐 R:R = 1:{rr:.1f}",
+        tv_note,
         "",
     ]
 

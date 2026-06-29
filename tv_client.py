@@ -57,13 +57,26 @@ MACRO_SYMBOLS: Dict[str, tuple] = {
 
 # Торговые инструменты (OHLCV)
 TRADE_SYMBOLS: Dict[str, tuple] = {
-    "XAUUSDT": ("XAUUSD", "OANDA"),   # Золото спот (Bybit перп. следует за ним)
-    "XAGUSDT": ("SILVER", "TVC"),     # Серебро спот
+    # Металлы — TV спот, точнее для анализа
+    "XAUUSDT": ("XAUUSD", "OANDA"),
+    "XAGUSDT": ("SILVER", "TVC"),
+    # Крипто — Bybit (TV дублирует с задержкой)
     "BTCUSDT": ("BTCUSDT", "BYBIT"),
     "ETHUSDT": ("ETHUSDT", "BYBIT"),
     "SOLUSDT": ("SOLUSDT", "BYBIT"),
     "BNBUSDT": ("BNBUSDT", "BYBIT"),
     "XRPUSDT": ("XRPUSDT", "BYBIT"),
+    # Индексы (TV only, Bybit не имеет реального перпа)
+    "NAS100":  ("NQ1!",   "CME_MINI"),
+    "SPX500":  ("SPX",    "SP"),
+    # Форекс (TV only)
+    "EURUSD":  ("EURUSD", "FX"),
+    "USDJPY":  ("USDJPY", "FX"),
+    "GBPUSD":  ("GBPUSD", "FX"),
+    "AUDUSD":  ("AUDUSD", "FX"),
+    "USDCAD":  ("USDCAD", "FX"),
+    "USDCHF":  ("USDCHF", "OANDA"),
+    "NZDUSD":  ("NZDUSD", "FX"),
 }
 
 # ── Singleton клиент ──────────────────────────────────────────────────────────
@@ -71,17 +84,17 @@ _lock = threading.Lock()
 _tv = None
 
 
-def _get_tv():
+def _get_tv(reset: bool = False):
     global _tv
     if not _TV_AVAILABLE:
         return None
     with _lock:
-        if _tv is None:
+        if _tv is None or reset:
             try:
                 _tv = TvDatafeed()
             except Exception as e:
                 logger.error(f"TvDatafeed init: {e}")
-                return None
+                _tv = None
     return _tv
 
 
@@ -91,28 +104,34 @@ def get_closes(tv_symbol: str, exchange: str,
                interval: str = "15", n_bars: int = 30) -> Optional[List[float]]:
     """
     Возвращает список цен закрытия (от старых к новым).
-    Таймаут встроен в tvdatafeed (по умолчанию 20с).
+    При ошибке соединения пересоздаёт клиент и повторяет 1 раз.
     """
-    tv = _get_tv()
-    if tv is None:
-        return None
     intv = _INTERVAL_MAP.get(interval, _INTERVAL_MAP.get("15"))
     if intv is None:
         return None
-    result: List = [None]
 
-    def _fetch():
-        try:
-            df = tv.get_hist(tv_symbol, exchange, interval=intv, n_bars=n_bars)
-            if df is not None and not df.empty:
-                result[0] = df["close"].dropna().tolist()
-        except Exception as e:
-            logger.debug(f"TV {exchange}:{tv_symbol} {interval}: {e}")
+    for attempt in range(2):
+        tv = _get_tv(reset=(attempt > 0))
+        if tv is None:
+            return None
+        result: List = [None]
 
-    t = threading.Thread(target=_fetch, daemon=True)
-    t.start()
-    t.join(timeout=15)
-    return result[0]
+        def _fetch(tv=tv):
+            try:
+                df = tv.get_hist(tv_symbol, exchange, interval=intv, n_bars=n_bars)
+                if df is not None and not df.empty:
+                    result[0] = df["close"].dropna().tolist()
+            except Exception as e:
+                logger.debug(f"TV {exchange}:{tv_symbol} {interval}: {e}")
+
+        t = threading.Thread(target=_fetch, daemon=True)
+        t.start()
+        t.join(timeout=15)
+        if result[0]:
+            return result[0]
+        logger.debug(f"TV {exchange}:{tv_symbol} попытка {attempt+1} не удалась")
+
+    return None
 
 
 def get_ohlcv(tv_symbol: str, exchange: str,
@@ -120,39 +139,46 @@ def get_ohlcv(tv_symbol: str, exchange: str,
     """
     Возвращает OHLCV в формате Bybit: [[ts_ms, open, high, low, close, volume], ...]
     Порядок: новые → старые (как Bybit get_klines).
+    При ошибке пересоздаёт клиент и повторяет 1 раз.
     """
-    tv = _get_tv()
-    if tv is None:
-        return None
     intv = _INTERVAL_MAP.get(interval, _INTERVAL_MAP.get("15"))
     if intv is None:
         return None
-    result: List = [None]
 
-    def _fetch():
-        try:
-            df = tv.get_hist(tv_symbol, exchange, interval=intv, n_bars=n_bars)
-            if df is None or df.empty:
-                return
-            rows = []
-            for ts, row in df.iterrows():
-                ts_ms = int(ts.timestamp() * 1000)
-                rows.append([
-                    str(ts_ms),
-                    str(row.get("open",  0)),
-                    str(row.get("high",  0)),
-                    str(row.get("low",   0)),
-                    str(row.get("close", 0)),
-                    str(row.get("volume", 0)),
-                ])
-            result[0] = list(reversed(rows))   # новые сначала, как у Bybit
-        except Exception as e:
-            logger.debug(f"TV OHLCV {exchange}:{tv_symbol}: {e}")
+    for attempt in range(2):
+        tv = _get_tv(reset=(attempt > 0))
+        if tv is None:
+            return None
+        result: List = [None]
 
-    t = threading.Thread(target=_fetch, daemon=True)
-    t.start()
-    t.join(timeout=15)
-    return result[0]
+        def _fetch(tv=tv):
+            try:
+                df = tv.get_hist(tv_symbol, exchange, interval=intv, n_bars=n_bars)
+                if df is None or df.empty:
+                    return
+                rows = []
+                for ts, row in df.iterrows():
+                    ts_ms = int(ts.timestamp() * 1000)
+                    rows.append([
+                        str(ts_ms),
+                        str(row.get("open",  0)),
+                        str(row.get("high",  0)),
+                        str(row.get("low",   0)),
+                        str(row.get("close", 0)),
+                        str(row.get("volume", 0)),
+                    ])
+                result[0] = list(reversed(rows))
+            except Exception as e:
+                logger.debug(f"TV OHLCV {exchange}:{tv_symbol}: {e}")
+
+        t = threading.Thread(target=_fetch, daemon=True)
+        t.start()
+        t.join(timeout=15)
+        if result[0]:
+            return result[0]
+        logger.debug(f"TV OHLCV {exchange}:{tv_symbol} попытка {attempt+1} не удалась")
+
+    return None
 
 
 def get_macro_closes(key: str, interval: str = "15", n_bars: int = 30) -> Optional[List[float]]:

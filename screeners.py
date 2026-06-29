@@ -85,15 +85,90 @@ def _session_name(utc_hour: int) -> str:
 def _get_klines(symbol: str, interval: str, limit: int) -> list:
     """
     TV → Bybit fallback для OHLCV.
-    XAU/XAG: пробуем TV спот (OANDA/TVC) — точнее для металлов.
-    Крипто: сразу Bybit (TV дублирует те же данные с задержкой).
+    TV-only символы (форекс/индексы): только TV, нет Bybit.
+    Металлы: TV спот точнее для анализа, Bybit как резерв.
+    Крипто: сразу Bybit.
     """
     tv_entry = tv_client.TRADE_SYMBOLS.get(symbol)
+    if tv_entry and symbol in config.TV_ONLY_SYMBOLS:
+        # Форекс/индексы — только TV, Bybit аналога нет
+        return tv_client.get_ohlcv(tv_entry[0], tv_entry[1], interval=interval, n_bars=limit) or []
     if tv_entry and symbol in ("XAUUSDT", "XAGUSDT"):
         data = tv_client.get_ohlcv(tv_entry[0], tv_entry[1], interval=interval, n_bars=limit)
         if data and len(data) >= 60:
             return data
     return client.get_klines(symbol, interval=interval, limit=limit)
+
+
+def _session_bonus_forex(utc_hour: int) -> int:
+    """Сессионный бонус для форекс/индексов."""
+    if 12 <= utc_hour < 17:  return 2   # Лондон+NY overlap — пик ликвидности
+    if 7  <= utc_hour < 12:  return 1   # Лондон
+    if 17 <= utc_hour < 21:  return 1   # NY
+    return 0                             # Азия — низкая ликвидность
+
+
+def _session_bonus_index(utc_hour: int) -> int:
+    """Сессионный бонус для US индексов (NYSE 14:30-21:00 UTC)."""
+    if 14 <= utc_hour < 21:  return 2   # Основная NYSE сессия
+    if 12 <= utc_hour < 14:  return 1   # Pre-market
+    return 0
+
+
+def _macro_bonus_forex(symbol: str, direction: str, macro_data: dict) -> int:
+    """
+    Макро-бонус для форекс пар.
+    Основана на DXY — главный драйвер USD пар.
+    Диапазон: -2 до +2
+    """
+    if not macro_data:
+        return 0
+    d = 1 if direction == "Buy" else -1
+    dxy_1h = macro_data.get("dxy", {}).get("chg_1h", 0) or 0
+    bonus = 0
+    # USD-quote пары (EURUSD, GBPUSD, AUDUSD, NZDUSD): DXY обратная
+    if symbol in ("EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"):
+        if d == 1:
+            if   dxy_1h < -0.15: bonus += 2
+            elif dxy_1h < -0.05: bonus += 1
+            elif dxy_1h > 0.15:  bonus -= 1
+        else:
+            if   dxy_1h > 0.15:  bonus += 2
+            elif dxy_1h > 0.05:  bonus += 1
+            elif dxy_1h < -0.15: bonus -= 1
+    # USD-base пары (USDJPY, USDCAD, USDCHF): DXY прямая
+    elif symbol in ("USDJPY", "USDCAD", "USDCHF"):
+        if d == 1:
+            if   dxy_1h > 0.15:  bonus += 2
+            elif dxy_1h > 0.05:  bonus += 1
+            elif dxy_1h < -0.15: bonus -= 1
+        else:
+            if   dxy_1h < -0.15: bonus += 2
+            elif dxy_1h < -0.05: bonus += 1
+            elif dxy_1h > 0.15:  bonus -= 1
+    return max(-2, min(2, bonus))
+
+
+def _macro_bonus_index(symbol: str, direction: str, macro_data: dict) -> int:
+    """
+    Макро-бонус для US индексов.
+    Risk-on/off: DXY обратная, SPX само-подтверждение (для NAS100).
+    Диапазон: -2 до +2
+    """
+    if not macro_data:
+        return 0
+    d = 1 if direction == "Buy" else -1
+    dxy_1h = macro_data.get("dxy", {}).get("chg_1h", 0) or 0
+    spx_1h = macro_data.get("spx", {}).get("chg_1h", 0) or 0
+    bonus = 0
+    # Слабый доллар → risk-on → индексы вверх
+    if d == 1:
+        if dxy_1h < -0.15: bonus += 1
+        if spx_1h > 0.3:   bonus += 1
+    else:
+        if dxy_1h > 0.15:  bonus += 1
+        if spx_1h < -0.3:  bonus += 1
+    return max(-2, min(2, bonus))
 
 
 def _analyze(symbol: str) -> Optional[Dict]:
@@ -193,9 +268,9 @@ def _analyze(symbol: str) -> Optional[Dict]:
         daily_trend = 0
         daily_adx   = 0.0
         try:
-            raw_d = client.get_klines(symbol, interval="D", limit=15)
+            raw_d = _get_klines(symbol, "D", 15)
             if not raw_d:
-                raw_d = client.get_klines(symbol, interval="1440", limit=15)
+                raw_d = _get_klines(symbol, "1440", 15)
             if raw_d and len(raw_d) >= 2:
                 prev = list(reversed(raw_d))[1]
                 prev_h, prev_l, prev_c = float(prev[2]), float(prev[3]), float(prev[4])
@@ -216,13 +291,14 @@ def _analyze(symbol: str) -> Optional[Dict]:
         except Exception:
             pass
 
-        # ── Orderbook ─────────────────────────────────────────────────────────
+        # ── Orderbook (только Bybit-инструменты) ──────────────────────────────
         ob_imbalance = 0.5
-        try:
-            ob = client.get_orderbook(symbol, depth=20)
-            ob_imbalance = float(ob.get("imbalance") or 0.5)
-        except Exception:
-            pass
+        if symbol not in config.TV_ONLY_SYMBOLS:
+            try:
+                ob = client.get_orderbook(symbol, depth=20)
+                ob_imbalance = float(ob.get("imbalance") or 0.5)
+            except Exception:
+                pass
 
         return {
             "symbol":        symbol,
@@ -316,10 +392,14 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
 
     for symbol in config.SIGNAL_INSTRUMENTS:
         is_comm = symbol in ("XAUUSDT", "XAGUSDT")
+        wd = now_utc.weekday()  # 0=пн, 5=сб, 6=вс
 
-        # ── XAU/XAG: только рабочие дни (24/5) ──────────────────────────────
+        # ── Выходные: металлы и форекс/индексы закрыты (24/5) ────────────────
         if is_comm and _is_weekend_metals(now_utc):
-            logger.debug(f"{symbol} пропуск — выходной")
+            logger.debug(f"{symbol} пропуск — выходной (металлы)")
+            continue
+        if symbol in config.TV_ONLY_SYMBOLS and wd >= 5:
+            logger.debug(f"{symbol} пропуск — выходной (форекс/индексы)")
             continue
 
         data = _analyze(symbol)
@@ -353,20 +433,28 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         vwap    = data.get("vwap")
         diverg  = data.get("divergence", "none")
 
-        sess_b    = _session_bonus(utc_hour, symbol)
-        # Геополитика: бычья геополитика (войны/кризисы) толкает металлы вверх
-        # и крипто тоже (flight-to-safety + инфляционные ожидания), но слабее
+        is_tv   = symbol in config.TV_ONLY_SYMBOLS
+        is_fx   = symbol in config.FOREX_SYMBOLS
+        is_idx  = symbol in config.INDEX_SYMBOLS
+
+        # Сессионный бонус по типу инструмента
+        if is_fx:
+            sess_b = _session_bonus_forex(utc_hour)
+        elif is_idx:
+            sess_b = _session_bonus_index(utc_hour)
+        else:
+            sess_b = _session_bonus(utc_hour, symbol)
+
+        # Гео: только металлы. Форекс/индексы — через макро.
         if is_comm:
             geo_bonus = max(-1, min(1, int(round(geo_score * 2))))
-        elif symbol in config.ALTCOIN_SYMBOLS + ["BTCUSDT"]:
-            geo_bonus = 0   # крипто: геополитику не учитываем (слишком нестабильная корр.)
         else:
             geo_bonus = 0
 
         daily_trend = data.get("daily_trend", 0)
         daily_adx   = float(data.get("daily_adx") or 0.0)
 
-        # Новостной бонус: только для XAU/XAG (новости влияют на металлы)
+        # Новостной бонус: только металлы
         if is_comm:
             if news_sent >= 0.4:    news_bonus = 1
             elif news_sent <= -0.4: news_bonus = -1
@@ -377,13 +465,19 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         # RVOL бонус (жёсткий фильтр < 0.55 уже выше)
         rvol_bonus = 1 if rvol >= 1.5 else (-1 if rvol < 0.7 else 0)
 
-        # Orderbook
+        # Orderbook (только Bybit)
         ob_imb = float(data.get("ob_imbalance") or 0.5)
 
-        c_long  = correlations.corr_bonus(symbol, "Buy",  corr_data)
-        c_short = correlations.corr_bonus(symbol, "Sell", corr_data)
+        c_long  = correlations.corr_bonus(symbol, "Buy",  corr_data) if not is_tv else 0
+        c_short = correlations.corr_bonus(symbol, "Sell", corr_data) if not is_tv else 0
 
-        if is_comm:
+        if is_fx:
+            m_long  = _macro_bonus_forex(symbol, "Buy",  macro_data)
+            m_short = _macro_bonus_forex(symbol, "Sell", macro_data)
+        elif is_idx:
+            m_long  = _macro_bonus_index(symbol, "Buy",  macro_data)
+            m_short = _macro_bonus_index(symbol, "Sell", macro_data)
+        elif is_comm:
             m_long  = macro.gold_macro_bonus("Buy",  macro_data)
             m_short = macro.gold_macro_bonus("Sell", macro_data)
         else:
@@ -424,7 +518,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                 sig = data.copy()
                 sig.update({
                     "direction":      "Buy",
-                    "signal_type":    "COMM" if is_comm else "BTC",
+                    "signal_type":    ("FX" if is_fx else "IDX" if is_idx else "COMM" if is_comm else "BTC"),
+                    "tv_only":        is_tv,
                     "ta_score":       long_ta,
                     "geo_score":      geo_score,
                     "geo_headlines":  geo_headlines,
@@ -478,7 +573,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                 sig = data.copy()
                 sig.update({
                     "direction":      "Sell",
-                    "signal_type":    "COMM" if is_comm else "BTC",
+                    "signal_type":    ("FX" if is_fx else "IDX" if is_idx else "COMM" if is_comm else "BTC"),
+                    "tv_only":        is_tv,
                     "ta_score":       short_ta,
                     "geo_score":      geo_score,
                     "geo_headlines":  geo_headlines,
