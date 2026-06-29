@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+bot.log
+bot_startup.log
+state.json
+news_seen.json
+*.log
+.DS_Store
