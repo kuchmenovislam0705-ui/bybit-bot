@@ -26,6 +26,7 @@ import indicators
 import macro
 import news_monitor
 import signal_tracker
+import tv_client
 
 # webapp импортируется лениво чтобы не тянуть uvicorn при старте
 def _tv_boost(symbol: str, direction: str) -> int:
@@ -81,10 +82,24 @@ def _session_name(utc_hour: int) -> str:
     return ""
 
 
+def _get_klines(symbol: str, interval: str, limit: int) -> list:
+    """
+    TV → Bybit fallback для OHLCV.
+    XAU/XAG: пробуем TV спот (OANDA/TVC) — точнее для металлов.
+    Крипто: сразу Bybit (TV дублирует те же данные с задержкой).
+    """
+    tv_entry = tv_client.TRADE_SYMBOLS.get(symbol)
+    if tv_entry and symbol in ("XAUUSDT", "XAGUSDT"):
+        data = tv_client.get_ohlcv(tv_entry[0], tv_entry[1], interval=interval, n_bars=limit)
+        if data and len(data) >= 60:
+            return data
+    return client.get_klines(symbol, interval=interval, limit=limit)
+
+
 def _analyze(symbol: str) -> Optional[Dict]:
     """Мультитаймфреймный анализ: 15M + 1H + 4H + Daily pivot."""
     try:
-        raw_15 = client.get_klines(symbol, interval="15", limit=120)
+        raw_15 = _get_klines(symbol, "15", 120)
         if not raw_15 or len(raw_15) < 60:
             return None
 
@@ -148,7 +163,7 @@ def _analyze(symbol: str) -> Optional[Dict]:
         # ── 1H тренд ─────────────────────────────────────────────────────────
         trend_1h = 0
         try:
-            raw_1h = client.get_klines(symbol, interval="60", limit=60)
+            raw_1h = _get_klines(symbol, "60", 60)
             if raw_1h and len(raw_1h) >= 30:
                 c1h = [float(c[4]) for c in raw_1h]
                 e20 = indicators.calc_ema(c1h, 20)
@@ -162,7 +177,7 @@ def _analyze(symbol: str) -> Optional[Dict]:
         # ── 4H тренд ─────────────────────────────────────────────────────────
         trend_4h = 0
         try:
-            raw_4h = client.get_klines(symbol, interval="240", limit=50)
+            raw_4h = _get_klines(symbol, "240", 50)
             if raw_4h and len(raw_4h) >= 20:
                 c4h = [float(c[4]) for c in raw_4h]
                 e20 = indicators.calc_ema(c4h, 20)
