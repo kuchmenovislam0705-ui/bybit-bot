@@ -79,8 +79,8 @@ console = Console()
 def _banner() -> None:
     tg = "[green]✓[/green]" if config.TELEGRAM_TOKEN else "[red]✗[/red]"
     console.print(
-        f"\n[bold yellow]СКАЛЬП-СИГНАЛЫ — XAU / XAG / BTC[/bold yellow]\n"
-        f"  Таймфрейм:   15M + 1H тренд + 4H макро\n"
+        f"\n[bold yellow]СКАЛЬП-СИГНАЛЫ — 16 инструментов[/bold yellow]\n"
+        f"  Таймфрейм:   5M вход + 15M/1H тренд + 4H макро\n"
         f"  Макро:       DXY · EUR/USD · US10Y · Oil · S&P500\n"
         f"  Pivot+VWAP:  ежедневные уровни + внутридневной VWAP\n"
         f"  Дивергенция: RSI бычья/медвежья (+3 к скору)\n"

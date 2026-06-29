@@ -172,39 +172,44 @@ def _macro_bonus_index(symbol: str, direction: str, macro_data: dict) -> int:
 
 
 def _analyze(symbol: str) -> Optional[Dict]:
-    """Мультитаймфреймный анализ: 15M + 1H + 4H + Daily pivot."""
+    """
+    Мультитаймфреймный анализ: 5M вход + 15M тренд + 1H тренд + 4H + Daily pivot.
+    5M — основной таймфрейм для точки входа.
+    15M/1H — тренд-фильтр (не входить против старшего тренда).
+    """
     try:
-        raw_15 = _get_klines(symbol, "15", 120)
-        if not raw_15 or len(raw_15) < 60:
+        # ── 5M — основной таймфрейм для сигнала ──────────────────────────────
+        raw_5 = _get_klines(symbol, "5", 120)
+        if not raw_5 or len(raw_5) < 40:
             return None
 
-        c15, h15, l15, v15, o15 = indicators.parse_klines(raw_15)
-        price = float(c15[-1])
+        c5, h5, l5, v5, o5 = indicators.parse_klines(raw_5)
+        price = float(c5[-1])
 
-        rsi        = indicators.calc_rsi(c15, 14)
-        atr        = indicators.calc_atr(h15, l15, c15, 14)
+        rsi        = indicators.calc_rsi(c5, 14)
+        atr        = indicators.calc_atr(h5, l5, c5, 14)
         atr_pct    = atr / price * 100 if atr and price else None
-        rvol       = indicators.calc_rvol(v15, 20)
-        macd       = indicators.calc_macd(c15)
-        bb         = indicators.calc_bollinger(c15)
-        stoch      = indicators.calc_stochastic(h15, l15, c15)
-        adx_full   = indicators._adx_compute(h15, l15, c15)
+        rvol       = indicators.calc_rvol(v5, 20)
+        macd       = indicators.calc_macd(c5)
+        bb         = indicators.calc_bollinger(c5)
+        stoch      = indicators.calc_stochastic(h5, l5, c5)
+        adx_full   = indicators._adx_compute(h5, l5, c5)
         adx        = adx_full.get("adx")
         pdi        = adx_full.get("pdi", 0.0) or 0.0
         mdi        = adx_full.get("mdi", 0.0) or 0.0
-        sr         = indicators.detect_support_resistance(h15, l15, lookback=5)
-        candle_pat = indicators.detect_candle_pattern(o15, h15, l15, c15)
-        multi_pat  = indicators.detect_multi_candle_pattern(o15, h15, l15, c15)
-        fvg        = indicators.detect_fvg(h15, l15)
-        ema20_15   = indicators.calc_ema(c15, 20)
-        ema_cross  = indicators.calc_ema_cross(c15, fast=9, slow=21)
+        sr         = indicators.detect_support_resistance(h5, l5, lookback=5)
+        candle_pat = indicators.detect_candle_pattern(o5, h5, l5, c5)
+        multi_pat  = indicators.detect_multi_candle_pattern(o5, h5, l5, c5)
+        fvg        = indicators.detect_fvg(h5, l5)
+        ema20_5    = indicators.calc_ema(c5, 20)
+        ema_cross  = indicators.calc_ema_cross(c5, fast=9, slow=21)
 
-        change_15m = indicators.pct_change(c15, 1)
-        change_1h  = indicators.pct_change(c15, 4)
-        change_4h  = indicators.pct_change(c15, 16)
+        change_15m = indicators.pct_change(c5, 3)   # 3 × 5M ≈ 15M
+        change_1h  = indicators.pct_change(c5, 12)  # 12 × 5M = 1H
+        change_4h  = indicators.pct_change(c5, 48)  # 48 × 5M = 4H
 
-        h_last  = float(h15[-1]); l_last = float(l15[-1])
-        o_last  = float(o15[-1]); c_last = float(c15[-1])
+        h_last  = float(h5[-1]); l_last = float(l5[-1])
+        o_last  = float(o5[-1]); c_last = float(c5[-1])
         rng     = h_last - l_last
         body    = abs(c_last - o_last)
         body_pct  = body / rng if rng > 0 else 0.0
@@ -215,12 +220,12 @@ def _analyze(symbol: str) -> Optional[Dict]:
         if not rsi or not atr or not atr_pct or atr_pct < 0.01:
             return None
 
-        # ── VWAP ─────────────────────────────────────────────────────────────
+        # ── VWAP (по дневным 5M свечам) ───────────────────────────────────────
         vwap = None
         try:
             now_utc  = datetime.now(timezone.utc)
             midnight = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-            today_raw = [c for c in raw_15
+            today_raw = [c for c in raw_5
                          if datetime.fromtimestamp(int(c[0])/1000, tz=timezone.utc) >= midnight]
             if len(today_raw) >= 4:
                 tc, th, tl, tv, _ = indicators.parse_klines(today_raw)
@@ -231,21 +236,21 @@ def _analyze(symbol: str) -> Optional[Dict]:
         # ── RSI дивергенция ───────────────────────────────────────────────────
         divergence = "none"
         try:
-            divergence = indicators.detect_divergence(c15, lookback=40)
+            divergence = indicators.detect_divergence(c5, lookback=30)
         except Exception:
             pass
 
-        # ── 1H тренд ─────────────────────────────────────────────────────────
-        trend_1h = 0
+        # ── 15M тренд (первый старший фильтр) ────────────────────────────────
+        trend_1h = 0   # используем как 15M тренд
         try:
-            raw_1h = _get_klines(symbol, "60", 60)
-            if raw_1h and len(raw_1h) >= 30:
-                c1h = [float(c[4]) for c in raw_1h]
-                e20 = indicators.calc_ema(c1h, 20)
-                e50 = indicators.calc_ema(c1h, 50)
+            raw_15 = _get_klines(symbol, "15", 60)
+            if raw_15 and len(raw_15) >= 30:
+                c15 = [float(c[4]) for c in raw_15]
+                e20 = indicators.calc_ema(c15, 20)
+                e50 = indicators.calc_ema(c15, 50)
                 if e20 and e50:
-                    if e20 > e50 and c1h[-1] > e20:   trend_1h = 1
-                    elif e20 < e50 and c1h[-1] < e20: trend_1h = -1
+                    if e20 > e50 and c15[-1] > e20:   trend_1h = 1
+                    elif e20 < e50 and c15[-1] < e20: trend_1h = -1
         except Exception:
             pass
 
@@ -320,7 +325,7 @@ def _analyze(symbol: str) -> Optional[Dict]:
             "candle_pat":    candle_pat,
             "multi_pat":     multi_pat,
             "fvg":           fvg,
-            "ema20":         ema20_15,
+            "ema20":         ema20_5,
             "ema9_bull":     ema_cross.get("bull_trend", False),
             "ema9_bear":     ema_cross.get("bear_trend", False),
             "ema_fresh_bull":ema_cross.get("fresh_bull", False),
