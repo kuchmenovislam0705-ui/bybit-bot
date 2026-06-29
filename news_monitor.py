@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -198,6 +199,40 @@ _IMPACT_RULES: Dict[str, Dict] = {
 }
 
 
+# ── Перевод заголовков на русский ─────────────────────────────────────────────
+
+_translate_cache: Dict[str, str] = {}
+
+
+def _translate_ru(text: str) -> str:
+    """
+    Переводит английский текст на русский через MyMemory API.
+    Бесплатно, без ключа, лимит ~1000 запросов/день.
+    При ошибке возвращает оригинал.
+    """
+    if not text:
+        return text
+    cache_key = text[:120]
+    if cache_key in _translate_cache:
+        return _translate_cache[cache_key]
+    try:
+        r = requests.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text[:500], "langpair": "en|ru"},
+            timeout=8,
+        )
+        data = r.json()
+        result = data.get("responseData", {}).get("translatedText", "")
+        # Иногда API возвращает "QUERY LENGTH LIMIT EXCEDEED" или оригинал
+        if result and "QUERY LENGTH" not in result and result.lower() != text.lower():
+            _translate_cache[cache_key] = result
+            return result
+    except Exception as e:
+        logger.debug(f"Перевод не удался: {e}")
+    _translate_cache[cache_key] = text
+    return text
+
+
 # ── Дедупликация (seen stories) ────────────────────────────────────────────────
 
 def _load_seen() -> set:
@@ -337,8 +372,11 @@ def _build_alert(title: str, persons: list, impact: Dict, source: str) -> Option
         pers_str = " · ".join(f"{n} <i>({r})</i>" for n, r, _ in persons[:3])
         lines.append(f"👤 {pers_str}")
 
-    # Заголовок новости
-    lines.append(f"\n📰 <b>{title[:180]}</b>")
+    # Заголовок новости (переводим на русский)
+    title_ru = _translate_ru(title[:250])
+    lines.append(f"\n📰 <b>{title_ru[:220]}</b>")
+    if title_ru.lower() != title[:220].lower():
+        lines.append(f"<i>🇬🇧 {title[:140]}</i>")
     lines.append(f"🕐 {now_s}  |  {source}")
 
     # Реакция рынков
