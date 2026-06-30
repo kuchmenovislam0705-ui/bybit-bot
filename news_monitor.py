@@ -38,32 +38,24 @@ _alert_times: List[float] = []
 
 
 # ── RSS-источники ──────────────────────────────────────────────────────────────
+# Отсортированы по актуальности (проверено: ForexLive ~7 мин, SeekingAlpha ~9 мин)
 
 _FEEDS = [
-    # ФРС, ЦБ, монетарная политика
-    "https://news.google.com/rss/search?q=federal+reserve+powell+interest+rate&hl=en&gl=US&ceid=US:en",
-    # Трамп, экономика США, тарифы
-    "https://news.google.com/rss/search?q=trump+economy+tariffs+dollar+trade&hl=en&gl=US&ceid=US:en",
-    # Золото, DXY, доллар
-    "https://news.google.com/rss/search?q=gold+price+dollar+DXY+silver&hl=en&gl=US&ceid=US:en",
-    # Геополитика, войны, конфликты
-    "https://news.google.com/rss/search?q=war+sanctions+military+strike+conflict&hl=en&gl=US&ceid=US:en",
-    # Китай, Си Цзиньпин, юань
-    "https://news.google.com/rss/search?q=china+xi+jinping+yuan+pboc+stimulus&hl=en&gl=US&ceid=US:en",
-    # Россия, Путин, Украина
-    "https://news.google.com/rss/search?q=russia+putin+ukraine+sanctions+ceasefire&hl=en&gl=US&ceid=US:en",
-    # ОПЕК, нефть, энергетика
-    "https://news.google.com/rss/search?q=opec+oil+production+saudi+energy&hl=en&gl=US&ceid=US:en",
-    # Инфляция, рецессия, кризис
-    "https://news.google.com/rss/search?q=inflation+cpi+recession+stagflation+dollar&hl=en&gl=US&ceid=US:en",
-    # Биткоин, крипто
-    "https://news.google.com/rss/search?q=bitcoin+crypto+regulation+ETF&hl=en&gl=US&ceid=US:en",
-    # BBC мировые новости
-    "https://feeds.bbci.co.uk/news/world/rss.xml",
-    # BBC бизнес и экономика
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
-    # The Guardian мировая политика
-    "https://www.theguardian.com/world/rss",
+    # ── ФОРЕКС / ЦБ / Ставки (самые свежие, ~7 мин) ─────────────────────────
+    "https://www.forexlive.com/feed",              # главная лента — всё важное
+    "https://www.forexlive.com/feed/forex",        # только форекс движения
+    "https://www.forexlive.com/feed/centralbank",  # ФРС, ЕЦБ, BoJ, BoE, RBA
+    # ── РЫНКИ США (9-23 мин) ─────────────────────────────────────────────────
+    "https://seekingalpha.com/market_currents.xml", # market currents — быстро
+    "https://feeds.marketwatch.com/marketwatch/topstories/",  # MarketWatch
+    # ── ФИНАНСЫ / ЭКОНОМИКА (61 мин) ─────────────────────────────────────────
+    "https://feeds.bloomberg.com/markets/news.rss",     # Bloomberg Markets
+    "https://feeds.bloomberg.com/technology/news.rss",  # Bloomberg Tech
+    "https://feeds.bbci.co.uk/news/business/rss.xml",   # BBC Business
+    "https://www.theguardian.com/business/rss",         # Guardian Business
+    # ── ГЕОПОЛИТИКА / МИР ────────────────────────────────────────────────────
+    "https://feeds.bbci.co.uk/news/world/rss.xml",      # BBC World
+    "https://www.theguardian.com/world/rss",            # Guardian World
 ]
 
 
@@ -444,10 +436,15 @@ def _scan_once(cold_start: bool = False) -> None:
 
     # Определяем источник из URL
     def _src(url: str) -> str:
-        if "bbc" in url:       return "BBC"
-        if "guardian" in url:  return "Guardian"
-        if "google" in url:    return "Google News"
-        if "reuters" in url:   return "Reuters"
+        if "forexlive" in url:
+            if "centralbank" in url: return "ForexLive/CentralBank"
+            if "forex" in url:       return "ForexLive/FX"
+            return "ForexLive"
+        if "seekingalpha" in url:    return "SeekingAlpha"
+        if "marketwatch" in url:     return "MarketWatch"
+        if "bloomberg" in url:       return "Bloomberg"
+        if "bbc" in url:             return "BBC"
+        if "guardian" in url:        return "Guardian"
         return "News"
 
     high_impact_stories = []
