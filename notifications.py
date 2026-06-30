@@ -194,9 +194,20 @@ def send_signal(signal: dict) -> None:
     sess_line = f"  {sess_nm}" if sess_nm else ""
     tv_note = "\n⚠️ <i>TV-сигнал — торговать через TradingView / брокера</i>" if is_tv else ""
 
+    daily_trend_val = signal.get("daily_trend", 0)
+    daily_adx_val   = signal.get("daily_adx", 0.0)
+    if daily_trend_val == 1:
+        daily_trend_str = f"⬆️ БЫЧИЙ (ADX={daily_adx_val:.0f})"
+    elif daily_trend_val == -1:
+        daily_trend_str = f"⬇️ МЕДВЕЖИЙ (ADX={daily_adx_val:.0f})"
+    else:
+        daily_trend_str = "↔️ НЕЙТР"
+    session_bias = signal.get("session_bias", "НЕЙТР")
+
     lines = [
-        f"{grade} {emoji} <b>{name} — {dlbl}  [{type_label} 15M]{sess_line}</b>",
+        f"{grade} {emoji} <b>{name} — {dlbl}  [{type_label} 1M/5M]{sess_line}</b>",
         f"<i>{_GRADE_LABEL.get(grade, '')}</i>",
+        f"📅 Тренд дня: {daily_trend_str}  |  Сессия: {session_bias}",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💰 Цена:       <code>{_fmt(sym, price)}</code>",
         f"🛑 Стоп:       <code>{_fmt(sym, sl)}</code>  <i>(-{sl_pct:.2f}%)</i>",
@@ -294,6 +305,27 @@ def send_signal(signal: dict) -> None:
     fvg = signal.get("fvg", {})
     if fvg and fvg.get("type") not in (None, "none", ""):
         lines.append(f"▸ FVG: {fvg['type']} ({fvg.get('gap_pct',0):.2f}%)")
+
+    active_fvgs = signal.get("active_fvgs", [])
+    if active_fvgs:
+        fvg_d = active_fvgs[0]
+        fvg_dir = "↑" if fvg_d["type"] == "bullish" else "↓"
+        lines.append(f"📐 FVG актив: {fvg_d['type']}{fvg_dir} [{fvg_d['bottom']:.2f}–{fvg_d['top']:.2f}] "
+                     f"({fvg_d['gap_pct']:.2f}%)")
+
+    ob = signal.get("order_block", {})
+    if ob and ob.get("type") not in (None, "none", ""):
+        ob_dir = "🟢" if ob["type"] == "bull" else "🔴"
+        lines.append(f"🧱 OB ({ob['type'].upper()}): {ob_dir} [{ob.get('bottom',0):.2f}–{ob.get('top',0):.2f}] "
+                     f"сила={ob.get('strength',0):.2f}%")
+
+    desc_1m = signal.get("desc_1m", "")
+    if desc_1m:
+        lines.append(f"⚡ 1M: {desc_1m}")
+
+    sess_prox = signal.get("sess_prox_desc", "")
+    if sess_prox:
+        lines.append(f"🕐 Уровни сессий: {sess_prox}")
 
     # Детализация скора
     score_parts = [f"TA={ta}"]

@@ -374,6 +374,124 @@ def detect_fvg(highs: np.ndarray, lows: np.ndarray) -> dict:
     return {"type": "none", "gap_pct": 0.0}
 
 
+def find_active_fvgs(highs: np.ndarray, lows: np.ndarray, lookback: int = 30) -> list:
+    """Scan last N bars for active (unfilled) Fair Value Gaps."""
+    results = []
+    n = min(len(highs), lookback)
+    if n < 3:
+        return results
+    arr_h = [float(x) for x in highs[-n:]]
+    arr_l = [float(x) for x in lows[-n:]]
+    last_price = float(lows[-1])
+
+    for i in range(n - 3):
+        h2, l2 = arr_h[i], arr_l[i]
+        h0, l0 = arr_h[i + 2], arr_l[i + 2]
+        if h2 < l0:
+            gap_pct = (l0 - h2) / h2 * 100
+            if gap_pct > 0.02 and last_price > h2:
+                results.append({
+                    "type": "bullish", "top": l0, "bottom": h2,
+                    "gap_pct": round(gap_pct, 3), "bar_idx": n - 3 - i
+                })
+        if l2 > h0:
+            gap_pct = (l2 - h0) / l2 * 100
+            if gap_pct > 0.02 and last_price < l2:
+                results.append({
+                    "type": "bearish", "top": l2, "bottom": h0,
+                    "gap_pct": round(gap_pct, 3), "bar_idx": n - 3 - i
+                })
+    results.sort(key=lambda x: (x["bar_idx"], -x["gap_pct"]))
+    return results[:5]
+
+
+def detect_order_block(opens: np.ndarray, highs: np.ndarray,
+                       lows: np.ndarray, closes: np.ndarray,
+                       lookback: int = 30) -> dict:
+    """
+    Order Block detection.
+    Bull OB: bearish candle immediately before a bullish impulse.
+    Bear OB: bullish candle immediately before a bearish impulse.
+    """
+    n = min(len(closes), lookback)
+    if n < 5:
+        return {"type": "none"}
+    arr_o = [float(x) for x in opens[-n:]]
+    arr_h = [float(x) for x in highs[-n:]]
+    arr_l = [float(x) for x in lows[-n:]]
+    arr_c = [float(x) for x in closes[-n:]]
+
+    for i in range(n - 3, 1, -1):
+        if arr_c[i] < arr_o[i]:
+            body = arr_o[i] - arr_c[i]
+            rng  = arr_h[i] - arr_l[i]
+            if rng > 0 and body / rng >= 0.3:
+                if arr_c[i + 1] > arr_o[i + 1] and arr_c[i + 1] > arr_h[i]:
+                    return {
+                        "type": "bull", "top": arr_h[i], "bottom": arr_l[i],
+                        "strength": round(body / arr_c[i] * 100, 3),
+                        "bar_idx": n - 1 - i,
+                    }
+    for i in range(n - 3, 1, -1):
+        if arr_c[i] > arr_o[i]:
+            body = arr_c[i] - arr_o[i]
+            rng  = arr_h[i] - arr_l[i]
+            if rng > 0 and body / rng >= 0.3:
+                if arr_c[i + 1] < arr_o[i + 1] and arr_c[i + 1] < arr_l[i]:
+                    return {
+                        "type": "bear", "top": arr_h[i], "bottom": arr_l[i],
+                        "strength": round(body / arr_c[i] * 100, 3),
+                        "bar_idx": n - 1 - i,
+                    }
+    return {"type": "none"}
+
+
+def score_1m_entry(opens_1m: np.ndarray, highs_1m: np.ndarray,
+                   lows_1m: np.ndarray, closes_1m: np.ndarray,
+                   direction: str) -> Tuple[int, str]:
+    """
+    1M micro-structure confirmation score.
+    Returns (bonus 0-5, description).
+    """
+    if len(closes_1m) < 5:
+        return 0, ""
+    bonus = 0
+    parts: List[str] = []
+    d = 1 if direction == "Buy" else -1
+
+    pat = detect_candle_pattern(opens_1m, highs_1m, lows_1m, closes_1m)
+    bull_1m = {"bullish_engulfing", "hammer", "pin_bar_bull", "bullish_harami", "tweezer_bottom"}
+    bear_1m = {"bearish_engulfing", "shooting_star", "pin_bar_bear", "bearish_harami", "tweezer_top"}
+    if d == 1 and pat in bull_1m:
+        bonus += 2; parts.append(f"1M:{pat}")
+    elif d == -1 and pat in bear_1m:
+        bonus += 2; parts.append(f"1M:{pat}")
+
+    fvg_1m = detect_fvg(highs_1m, lows_1m)
+    if d == 1 and fvg_1m.get("type") == "bullish" and (fvg_1m.get("gap_pct") or 0) > 0.02:
+        bonus += 1; parts.append("1M:FVG↑")
+    elif d == -1 and fvg_1m.get("type") == "bearish" and (fvg_1m.get("gap_pct") or 0) > 0.02:
+        bonus += 1; parts.append("1M:FVG↓")
+
+    if len(closes_1m) >= 4:
+        c = [float(x) for x in closes_1m[-4:]]
+        o = [float(x) for x in opens_1m[-4:]]
+        if d == 1 and all(c[i] > o[i] for i in range(1, 4)):
+            bonus += 1; parts.append("1M:моментум↑")
+        elif d == -1 and all(c[i] < o[i] for i in range(1, 4)):
+            bonus += 1; parts.append("1M:моментум↓")
+
+    if len(closes_1m) >= 10:
+        rsi_1m = calc_rsi(closes_1m, 7)
+        if rsi_1m:
+            if d == 1 and rsi_1m < 35:
+                bonus += 1; parts.append(f"1M:RSI={rsi_1m:.0f}")
+            elif d == -1 and rsi_1m > 65:
+                bonus += 1; parts.append(f"1M:RSI={rsi_1m:.0f}")
+
+    return min(5, bonus), " ".join(parts)
+
+
 # ── Скоринг сигнала ───────────────────────────────────────────────────────────
 
 _BULL_PAT_2 = {"bullish_engulfing", "hammer", "pin_bar_bull",

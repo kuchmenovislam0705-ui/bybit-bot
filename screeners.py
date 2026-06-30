@@ -25,6 +25,7 @@ import geo
 import indicators
 import macro
 import news_monitor
+import session_levels
 import signal_tracker
 import tv_client
 
@@ -181,9 +182,9 @@ def _analyze(symbol: str) -> Optional[Dict]:
     from concurrent.futures import ThreadPoolExecutor
     try:
         # ── Параллельный фетч всех таймфреймов ───────────────────────────────
-        tf_specs = [("5", 120), ("15", 60), ("240", 50), ("D", 15)]
+        tf_specs = [("1", 60), ("5", 120), ("15", 60), ("240", 50), ("D", 15)]
         tf_data: dict = {}
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        with ThreadPoolExecutor(max_workers=5) as ex:
             futures = {ex.submit(_get_klines, symbol, tf, n): tf for tf, n in tf_specs}
             for fut in futures:
                 tf = futures[fut]
@@ -214,6 +215,18 @@ def _analyze(symbol: str) -> Optional[Dict]:
         candle_pat = indicators.detect_candle_pattern(o5, h5, l5, c5)
         multi_pat  = indicators.detect_multi_candle_pattern(o5, h5, l5, c5)
         fvg        = indicators.detect_fvg(h5, l5)
+        active_fvgs = indicators.find_active_fvgs(h5, l5, lookback=30)
+        order_block = indicators.detect_order_block(o5, h5, l5, c5, lookback=25)
+
+        # 1M entry micro-structure confirmation
+        raw_1m = tf_data.get("1") or []
+        score_1m_long = score_1m_short = 0
+        desc_1m_long = desc_1m_short = ""
+        if raw_1m and len(raw_1m) >= 10:
+            c1m, h1m, l1m, _v1m, o1m = indicators.parse_klines(raw_1m)
+            score_1m_long,  desc_1m_long  = indicators.score_1m_entry(o1m, h1m, l1m, c1m, "Buy")
+            score_1m_short, desc_1m_short = indicators.score_1m_entry(o1m, h1m, l1m, c1m, "Sell")
+
         ema20_5    = indicators.calc_ema(c5, 20)
         ema_cross  = indicators.calc_ema_cross(c5, fast=9, slow=21)
 
@@ -355,6 +368,12 @@ def _analyze(symbol: str) -> Optional[Dict]:
             "daily_trend":   daily_trend,
             "daily_adx":     round(daily_adx, 1),
             "ob_imbalance":  round(ob_imbalance, 3),
+            "active_fvgs":   active_fvgs,
+            "order_block":   order_block,
+            "score_1m_long": score_1m_long,
+            "score_1m_short":score_1m_short,
+            "desc_1m_long":  desc_1m_long,
+            "desc_1m_short": desc_1m_short,
             # совместимость
             "oi_growth":     0.0,
             "oi_falling":    False,
@@ -585,9 +604,12 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
             daily_b_l = 2 if daily_trend == 1 else (-1 if daily_trend == -1 else 0)
             ob_b_l    = 1 if ob_imb >= 0.62 else 0
             tv_b_l    = _tv_boost(symbol, "Buy")
+            sess_prox_l, sess_prox_desc_l = session_levels.proximity_bonus(symbol, price, "Buy")
+            score_1m_l = data.get("score_1m_long", 0)
             total = (long_ta + max(0, geo_bonus) + c_long + m_long
                      + piv_long + vwap_long + div_long + sess_b
-                     + daily_b_l + rvol_bonus + ob_b_l + news_bonus + tv_b_l)
+                     + daily_b_l + rvol_bonus + ob_b_l + news_bonus + tv_b_l
+                     + sess_prox_l + score_1m_l)
             if total >= min_score:
                 sig = data.copy()
                 sig.update({
@@ -618,6 +640,13 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                     "macro_data":     macro_data,
                     "suggested_sl":   round(price - sl_dist, _p_dec),
                     "suggested_tp":   round(price + tp_dist, _p_dec),
+                    "sess_prox_bonus":sess_prox_l,
+                    "sess_prox_desc": sess_prox_desc_l,
+                    "score_1m":       score_1m_l,
+                    "desc_1m":        data.get("desc_1m_long", ""),
+                    "active_fvgs":    data.get("active_fvgs", []),
+                    "order_block":    data.get("order_block", {}),
+                    "session_bias":   session_levels.get_bias(symbol, price),
                 })
                 longs.append(sig)
                 tv_str = f" tv={tv_b_l:+d}" if tv_b_l != 0 else ""
@@ -644,9 +673,12 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
             ob_b_s     = 1 if ob_imb <= 0.38 else 0
             news_b_s   = -news_bonus
             tv_b_s     = _tv_boost(symbol, "Sell")
+            sess_prox_s, sess_prox_desc_s = session_levels.proximity_bonus(symbol, price, "Sell")
+            score_1m_s = data.get("score_1m_short", 0)
             total = (short_ta + max(0, -geo_bonus) + c_short + m_short
                      + piv_short + vwap_short + div_short + sess_b
-                     + daily_b_s + rvol_bonus + ob_b_s + news_b_s + tv_b_s)
+                     + daily_b_s + rvol_bonus + ob_b_s + news_b_s + tv_b_s
+                     + sess_prox_s + score_1m_s)
             if total >= min_score:
                 sig = data.copy()
                 sig.update({
@@ -677,6 +709,13 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                     "macro_data":     macro_data,
                     "suggested_sl":   round(price + sl_dist, _p_dec),
                     "suggested_tp":   round(price - tp_dist, _p_dec),
+                    "sess_prox_bonus":sess_prox_s,
+                    "sess_prox_desc": sess_prox_desc_s,
+                    "score_1m":       score_1m_s,
+                    "desc_1m":        data.get("desc_1m_short", ""),
+                    "active_fvgs":    data.get("active_fvgs", []),
+                    "order_block":    data.get("order_block", {}),
+                    "session_bias":   session_levels.get_bias(symbol, price),
                 })
                 shorts.append(sig)
                 tv_str = f" tv={tv_b_s:+d}" if tv_b_s != 0 else ""
