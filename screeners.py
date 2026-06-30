@@ -421,7 +421,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
 
     is_asian_hour = utc_hour < 7 or utc_hour >= 20
     adx_thresh    = 15 if is_asian_hour else config.MIN_ADX
-    score_thresh  = adaptive_min  # без пенальти за азиатскую сессию
+    # Азия: меньше движений → чуть ниже порог чтобы не пропустить реальные сетапы
+    score_thresh  = max(4, adaptive_min - (1 if is_asian_hour else 0))
     corr_xau_xag  = float(corr_data.get("corr_xau_xag") or 0.0)
     logger.info(
         f"Гео: {geo_dir} ({geo_score:+.2f}) | "
@@ -596,8 +597,10 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         if is_fx:
             trend_ok_l = trend_1h >= 0
         else:
+            # Ranging market (ADX<22): нет тренда → оба направления валидны
+            ranging = adx < 22
             trend_ok_l = ((trend_1h == 1) or (trend_4h == 1 and trend_1h >= 0)
-                          or di_bull or extreme_oversold)
+                          or di_bull or extreme_oversold or ranging)
         rsi_ok_l   = rsi < 65
 
         if trend_ok_l and rsi_ok_l:
@@ -664,9 +667,9 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
             trend_ok_s = trend_1h <= 0
         else:
             trend_ok_s = ((trend_1h == -1) or (trend_4h == -1 and trend_1h <= 0)
-                          or di_bear)
-        # В сильном тренде (ADX>35, -DI доминирует) RSI может оставаться низким
-        rsi_ok_s   = rsi > 35 or (adx > 35 and di_bear and rsi > 15)
+                          or di_bear or ranging)
+        # В сильном тренде (ADX>35, -DI доминирует) RSI может оставаться очень низким
+        rsi_ok_s   = rsi > 35 or (adx > 35 and di_bear and rsi > 8)
 
         if trend_ok_s and rsi_ok_s:
             daily_b_s  = 2 if daily_trend == -1 else (-1 if daily_trend == 1 else 0)

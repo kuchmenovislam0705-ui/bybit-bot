@@ -362,19 +362,21 @@ def main() -> None:
             if not blocked:
                 for sig in longs + shorts:
                     sym = sig["symbol"]
-                    # Кулдаун: пропускаем если недавно был сигнал по этому символу
-                    if cooldown_h > 0 and sym in last_signal_ts:
-                        age_h = (now_utc - last_signal_ts[sym]).total_seconds() / 3600
+                    direction = sig.get("direction", "Buy")
+                    # Кулдаун независимый для ЛОНГ и ШОРТ одного инструмента
+                    cd_key = f"{sym}_{direction}"
+                    if cooldown_h > 0 and cd_key in last_signal_ts:
+                        age_h = (now_utc - last_signal_ts[cd_key]).total_seconds() / 3600
                         if age_h < cooldown_h:
                             logger.info(
-                                f"#{iteration} {sym} кулдаун: {age_h:.1f}h < {cooldown_h}h"
+                                f"#{iteration} {sym} {'ЛОНГ' if direction=='Buy' else 'ШОРТ'} кулдаун: {age_h*60:.1f}м"
                             )
                             continue
                     sig["sent_at"] = now_utc.strftime("%H:%M UTC")
                     notifications.send_signal(sig)
                     bc.add_signal(sig)
-                    signal_tracker.record(sig)   # ← запись для обучения
-                    last_signal_ts[sym] = now_utc
+                    signal_tracker.record(sig)
+                    last_signal_ts[cd_key] = now_utc
                     sent += 1
                     logger.info(
                         f"✉ [{sig.get('grade','?')}] {sig['symbol']} "

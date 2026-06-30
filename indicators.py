@@ -481,15 +481,31 @@ def score_1m_entry(opens_1m: np.ndarray, highs_1m: np.ndarray,
         elif d == -1 and all(c[i] < o[i] for i in range(1, 4)):
             bonus += 1; parts.append("1M:моментум↓")
 
-    if len(closes_1m) >= 10:
-        rsi_1m = calc_rsi(closes_1m, 7)
-        if rsi_1m:
-            if d == 1 and rsi_1m < 35:
-                bonus += 1; parts.append(f"1M:RSI={rsi_1m:.0f}")
-            elif d == -1 and rsi_1m > 65:
-                bonus += 1; parts.append(f"1M:RSI={rsi_1m:.0f}")
+    if len(closes_1m) >= 12:
+        rsi_arr = _rsi_series(closes_1m.astype(float) if hasattr(closes_1m, 'astype') else np.array(closes_1m, dtype=float), 7)
+        if len(rsi_arr) >= 2:
+            rsi_prev = float(rsi_arr[-2])
+            rsi_now  = float(rsi_arr[-1])
+            # RSI-50 кроссовер — один из самых частых и надёжных 1M-сигналов
+            if d == 1 and rsi_prev < 50 and rsi_now >= 50:
+                bonus += 2; parts.append(f"1M:RSI50↑")
+            elif d == -1 and rsi_prev > 50 and rsi_now <= 50:
+                bonus += 2; parts.append(f"1M:RSI50↓")
+            # Зоны перегрева
+            elif d == 1 and rsi_now < 35:
+                bonus += 1; parts.append(f"1M:RSI={rsi_now:.0f}")
+            elif d == -1 and rsi_now > 65:
+                bonus += 1; parts.append(f"1M:RSI={rsi_now:.0f}")
 
-    return min(5, bonus), " ".join(parts)
+    # EMA9/21 кроссовер на 1M
+    if len(closes_1m) >= 25:
+        ec_1m = calc_ema_cross(closes_1m, 9, 21)
+        if d == 1 and ec_1m.get("fresh_bull"):
+            bonus += 2; parts.append("1M:EMA↑")
+        elif d == -1 and ec_1m.get("fresh_bear"):
+            bonus += 2; parts.append("1M:EMA↓")
+
+    return min(6, bonus), " ".join(parts)
 
 
 # ── Скоринг сигнала ───────────────────────────────────────────────────────────
