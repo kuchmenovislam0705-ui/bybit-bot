@@ -58,9 +58,7 @@ def get() -> Dict:
     if now - _cache["ts"] < _CACHE_TTL and _cache["data"]:
         return _cache["data"]
 
-    all_symbols: List[str] = list(dict.fromkeys(
-        ["XAUUSDT", "XAGUSDT", "BTCUSDT"] + list(config.ALTCOIN_SYMBOLS)
-    ))
+    all_symbols: List[str] = ["XAUUSDT", "XAGUSDT", "BTCUSDT"]
     closes_map: Dict[str, list] = {}
 
     for sym in all_symbols:
@@ -99,14 +97,7 @@ def get() -> Dict:
         "price_btc":      last("BTCUSDT"),
     }
 
-    # Альткоины: BTC-corr + движения
-    for alt in config.ALTCOIN_SYMBOLS:
-        key = alt.replace("USDT", "").lower()
-        data[f"corr_btc_{key}"]   = corr("BTCUSDT", alt)
-        data[f"change_1h_{key}"]  = _chg(closes_map.get(alt, []), 1)
-        data[f"change_4h_{key}"]  = _chg(closes_map.get(alt, []), 4)
-        data[f"change_24h_{key}"] = _chg(closes_map.get(alt, []), 24)
-        data[f"price_{key}"]      = last(alt)
+    # Альткоины: пропускаем (инструменты убраны из списка)
 
     _cache["ts"]   = now
     _cache["data"] = data
@@ -116,16 +107,10 @@ def get() -> Dict:
     xag_1h = data["change_1h_xag"] or 0.0
     btc_1h = data["change_1h_btc"] or 0.0
     r_xau  = data["corr_xau_xag"] or 0.0
-    alt_parts = []
-    for alt in config.ALTCOIN_SYMBOLS:
-        k = alt.replace("USDT", "").lower()
-        r_val = data.get(f"corr_btc_{k}") or 0
-        alt_parts.append(f"BTC-{alt.replace('USDT','')} r={r_val:+.2f}")
-    alt_corrs = " | ".join(alt_parts)
     logger.info(
         f"Корреляции: XAU-XAG r={r_xau:+.2f} | "
         f"XAU 1H={xau_1h:+.3f}% | XAG 1H={xag_1h:+.3f}% | "
-        f"BTC 1H={btc_1h:+.3f}% | {alt_corrs}"
+        f"BTC 1H={btc_1h:+.3f}%"
     )
     return data
 
@@ -181,8 +166,8 @@ def corr_bonus(symbol: str, direction: str, corr_data: Dict) -> int:
                 elif xag_1h > 0.20 and xag_4h > 0.3:   bonus -= 1
         return max(-3, min(3, bonus))
 
-    # ── Альткоины: BTC — ведущий индикатор ───────────────────────────────────
-    if symbol in config.ALTCOIN_SYMBOLS:
+    # ── Альткоины: убраны из инструментов ────────────────────────────────────
+    if symbol in getattr(config, "ALTCOIN_SYMBOLS", []):
         key    = symbol.replace("USDT", "").lower()
         r      = corr_data.get(f"corr_btc_{key}", 0.7) or 0.7
         btc_1h = corr_data.get("change_1h_btc") or 0

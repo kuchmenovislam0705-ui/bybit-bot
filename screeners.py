@@ -95,8 +95,9 @@ def _get_klines(symbol: str, interval: str, limit: int) -> list:
         return tv_client.get_ohlcv(tv_entry[0], tv_entry[1], interval=interval, n_bars=limit) or []
     if tv_entry and symbol in ("XAUUSDT", "XAGUSDT"):
         data = tv_client.get_ohlcv(tv_entry[0], tv_entry[1], interval=interval, n_bars=limit)
-        if data and len(data) >= 60:
+        if data and len(data) >= 20:
             return data
+        # TV вернул мало или ничего — пробуем Bybit как резерв
     return client.get_klines(symbol, interval=interval, limit=limit)
 
 
@@ -420,27 +421,33 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         atr_pct = float(data.get("atr_pct") or 0.0)
         rvol    = float(data.get("rvol") or 1.0)
 
-        # ── Форекс: свои пороги (ADX/ATR структурно ниже чем у крипто) ──────
-        if is_fx:
+        # ── Металлы: пониженный ADX, без жёсткого RVOL-фильтра ──────────────
+        if is_comm:
+            comm_adx = getattr(config, "COMM_MIN_ADX", 10)
+            if adx < comm_adx:
+                logger.debug(f"{symbol} пропуск ADX={adx:.1f} < {comm_adx}")
+                continue
+            if atr_pct < 0.015:
+                logger.debug(f"{symbol} пропуск ATR%={atr_pct:.3f}%")
+                continue
+            # RVOL через TV OANDA/TVC ненадёжен в тихие часы → не блокируем
+        elif is_fx:
             if adx < config.FOREX_MIN_ADX:
                 logger.debug(f"{symbol} пропуск ADX={adx:.1f} < {config.FOREX_MIN_ADX}")
                 continue
             if atr_pct < config.FOREX_ATR_MIN:
-                logger.debug(f"{symbol} пропуск ATR%={atr_pct:.4f}% < {config.FOREX_ATR_MIN}%")
+                logger.debug(f"{symbol} пропуск ATR%={atr_pct:.4f}%")
                 continue
-            # TV тик-объём для форекс ненадёжен → не фильтруем по RVOL
         else:
-            # ── ADX фильтр (крипто / металлы / индексы) ──────────────────────
+            # ── BTC / крипто ──────────────────────────────────────────────────
             if adx < adx_thresh:
                 logger.debug(f"{symbol} пропуск ADX={adx:.1f} < {adx_thresh}")
                 continue
-            # ── ATR минимум ───────────────────────────────────────────────────
             if atr_pct < 0.015:
-                logger.debug(f"{symbol} пропуск ATR%={atr_pct:.3f}% < 0.015%")
+                logger.debug(f"{symbol} пропуск ATR%={atr_pct:.3f}%")
                 continue
-            # ── RVOL минимум ──────────────────────────────────────────────────
-            if rvol < 0.45:
-                logger.debug(f"{symbol} пропуск RVOL={rvol:.2f} < 0.45")
+            if rvol < 0.40:
+                logger.debug(f"{symbol} пропуск RVOL={rvol:.2f} < 0.40")
                 continue
 
         price   = data["price"]
@@ -483,8 +490,12 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         else:
             news_bonus = 0
 
-        # RVOL бонус: форекс пропускаем (TV тик-объём ненадёжен)
-        rvol_bonus = 0 if is_fx else (1 if rvol >= 1.5 else (-1 if rvol < 0.7 else 0))
+        # RVOL бонус: форекс и металлы — без штрафа (TV tick volume ненадёжен)
+        # BTC: нормальный Bybit volume → штраф за низкий RVOL оставляем
+        if is_fx or is_comm:
+            rvol_bonus = 1 if rvol >= 2.0 else 0
+        else:
+            rvol_bonus = 1 if rvol >= 1.5 else (-1 if rvol < 0.7 else 0)
 
         # Orderbook (только Bybit)
         ob_imb = float(data.get("ob_imbalance") or 0.5)

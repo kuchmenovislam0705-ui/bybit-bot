@@ -27,40 +27,33 @@ TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Инструменты ───────────────────────────────────────────────────────────────
-# Bybit-инструменты (OHLCV + ордербук через Bybit API)
 COMMODITY_SYMBOLS  = ["XAUUSDT", "XAGUSDT"]
-ALTCOIN_SYMBOLS    = ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+TV_ONLY_SYMBOLS    = []
+FOREX_SYMBOLS      = []
+INDEX_SYMBOLS      = []
 
-# TV-only инструменты (данные только через TradingView, торговля вручную)
-INDEX_SYMBOLS = ["NAS100", "SPX500"]
-FOREX_SYMBOLS = ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
-TV_ONLY_SYMBOLS = INDEX_SYMBOLS + FOREX_SYMBOLS
-
-SIGNAL_INSTRUMENTS = (
-    ["XAUUSDT", "XAGUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-    + INDEX_SYMBOLS
-    + FOREX_SYMBOLS
-)
+SIGNAL_INSTRUMENTS = ["XAUUSDT", "XAGUSDT", "BTCUSDT"]
 
 # ── Скальпинг-параметры ───────────────────────────────────────────────────────
-SL_ATR_MULT  = 1.2    # ATR × 1.2 — тайтый стоп для 5M скальпа
-TP_RR        = 1.5    # 1.5R — реалистично для 5M скальпа
+SL_ATR_MULT  = 1.2
+TP_RR        = 1.5
 TP1_RR       = TP_RR
 TP2_RR       = TP_RR
 
 # Минимальный скор для сигнала
-SIGNAL_MIN_SCORE = 10   # крипто / металлы / индексы
+SIGNAL_MIN_SCORE = 8    # снижено: фокус на 3 инструментах, нужны реальные сигналы
 
-# Форекс — отдельные пороги (форекс движется иначе чем крипто)
-FOREX_MIN_SCORE  = 7    # ниже: форекс даёт меньше очков из-за низкого ATR%
-FOREX_MIN_ADX    = 10   # ниже: форекс ADX структурно меньше чем у крипто
-FOREX_ATR_MIN    = 0.003  # % — порог ATR для форекс (0.003% ≈ 0.3 пипа на EUR)
+# Металлы — пониженный ADX (XAU/XAG структурно медленнее BTC)
+COMM_MIN_ADX  = 10      # XAU/XAG ADX часто 8-14 при реальном тренде
+FOREX_MIN_SCORE = 8     # совместимость (не используется без форекс)
+FOREX_MIN_ADX   = 10
+FOREX_ATR_MIN   = 0.003
 
-# ADX — фильтр флэта для крипто/металлов/индексов
+# ADX — фильтр флэта для BTC
 MIN_ADX = 15
 
 # Кулдаун между сигналами по одному инструменту
-SIGNAL_COOLDOWN_HOURS = 0.5
+SIGNAL_COOLDOWN_HOURS = 1.0
 
 # ── Технический анализ ────────────────────────────────────────────────────────
 RSI_PERIOD  = 14
