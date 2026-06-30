@@ -175,13 +175,24 @@ def _macro_bonus_index(symbol: str, direction: str, macro_data: dict) -> int:
 
 def _analyze(symbol: str) -> Optional[Dict]:
     """
-    Мультитаймфреймный анализ: 5M вход + 15M тренд + 1H тренд + 4H + Daily pivot.
-    5M — основной таймфрейм для точки входа.
-    15M/1H — тренд-фильтр (не входить против старшего тренда).
+    Мультитаймфреймный анализ: 5M вход + 15M тренд + 4H + Daily pivot.
+    Все таймфреймы фетчатся параллельно.
     """
+    from concurrent.futures import ThreadPoolExecutor
     try:
-        # ── 5M — основной таймфрейм для сигнала ──────────────────────────────
-        raw_5 = _get_klines(symbol, "5", 120)
+        # ── Параллельный фетч всех таймфреймов ───────────────────────────────
+        tf_specs = [("5", 120), ("15", 60), ("240", 50), ("D", 15)]
+        tf_data: dict = {}
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futures = {ex.submit(_get_klines, symbol, tf, n): tf for tf, n in tf_specs}
+            for fut in futures:
+                tf = futures[fut]
+                try:
+                    tf_data[tf] = fut.result(timeout=20)
+                except Exception:
+                    tf_data[tf] = []
+
+        raw_5 = tf_data.get("5") or []
         if not raw_5 or len(raw_5) < 40:
             return None
 
@@ -245,7 +256,7 @@ def _analyze(symbol: str) -> Optional[Dict]:
         # ── 15M тренд (первый старший фильтр) ────────────────────────────────
         trend_1h = 0   # используем как 15M тренд
         try:
-            raw_15 = _get_klines(symbol, "15", 60)
+            raw_15 = tf_data.get("15") or []
             if raw_15 and len(raw_15) >= 30:
                 c15 = [float(c[4]) for c in raw_15]
                 e20 = indicators.calc_ema(c15, 20)
@@ -259,7 +270,7 @@ def _analyze(symbol: str) -> Optional[Dict]:
         # ── 4H тренд ─────────────────────────────────────────────────────────
         trend_4h = 0
         try:
-            raw_4h = _get_klines(symbol, "240", 50)
+            raw_4h = tf_data.get("240") or []
             if raw_4h and len(raw_4h) >= 20:
                 c4h = [float(c[4]) for c in raw_4h]
                 e20 = indicators.calc_ema(c4h, 20)
@@ -275,9 +286,7 @@ def _analyze(symbol: str) -> Optional[Dict]:
         daily_trend = 0
         daily_adx   = 0.0
         try:
-            raw_d = _get_klines(symbol, "D", 15)
-            if not raw_d:
-                raw_d = _get_klines(symbol, "1440", 15)
+            raw_d = tf_data.get("D") or []
             if raw_d and len(raw_d) >= 2:
                 prev = list(reversed(raw_d))[1]
                 prev_h, prev_l, prev_c = float(prev[2]), float(prev[3]), float(prev[4])
@@ -361,9 +370,11 @@ def _analyze(symbol: str) -> Optional[Dict]:
 
 def run_all() -> Tuple[List[Dict], List[Dict]]:
     """
-    Анализирует XAU, XAG, BTC. Возвращает (longs, shorts).
+    Анализирует XAU, XAG, BTC параллельно. Возвращает (longs, shorts).
     XAU/XAG: 24/5 (пн-пт). BTC: 24/7.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
     now_utc   = datetime.now(timezone.utc)
     utc_hour  = now_utc.hour
     sess_name = _session_name(utc_hour)
@@ -371,10 +382,18 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
     # Адаптивный порог (повышается при плохой статистике)
     adaptive_min = signal_tracker.get_adaptive_score()
 
-    # Внешние данные (общие для всех символов)
-    geo_score, geo_headlines = geo.get_geo_score()
-    corr_data  = correlations.get()
-    macro_data = macro.get()
+    # Внешние данные — фетчим параллельно (у всех есть кеш, быстро)
+    def _fetch_geo():   return geo.get_geo_score()
+    def _fetch_corr():  return correlations.get()
+    def _fetch_macro(): return macro.get()
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        fut_geo   = ex.submit(_fetch_geo)
+        fut_corr  = ex.submit(_fetch_corr)
+        fut_macro = ex.submit(_fetch_macro)
+        geo_score, geo_headlines = fut_geo.result()
+        corr_data  = fut_corr.result()
+        macro_data = fut_macro.result()
 
     geo_dir   = ("БЫЧИЙ ↑"   if geo_score > 0.15
                  else "МЕДВЕЖИЙ ↓" if geo_score < -0.15
@@ -383,7 +402,6 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
 
     is_asian_hour = utc_hour < 7 or utc_hour >= 20
     adx_thresh    = 15 if is_asian_hour else config.MIN_ADX
-    # Азия: ADX порог ниже → компенсируем требованием +1 к скору
     score_thresh  = adaptive_min + (1 if is_asian_hour else 0)
     corr_xau_xag  = float(corr_data.get("corr_xau_xag") or 0.0)
     logger.info(
@@ -394,10 +412,27 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
         f"Мин.скор={score_thresh} ADX≥{adx_thresh}"
     )
 
+    # Анализируем все 3 инструмента параллельно
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {ex.submit(_analyze, sym): sym for sym in config.SIGNAL_INSTRUMENTS}
+        analyzed: dict = {}
+        for fut in _as_completed(futures, timeout=45):
+            sym = futures[fut]
+            try:
+                analyzed[sym] = fut.result()
+            except Exception as e:
+                logger.debug(f"_analyze({sym}): {e}")
+                analyzed[sym] = None
+
     longs:  List[Dict] = []
     shorts: List[Dict] = []
 
     for symbol in config.SIGNAL_INSTRUMENTS:
+        data = analyzed.get(symbol)
+        if data is None:
+            continue
+        # Заменяем стандартный цикл — данные уже в analyzed
+        _process_symbol = True  # сигнал к обработке ниже
         is_comm = symbol in ("XAUUSDT", "XAGUSDT")
         wd = now_utc.weekday()  # 0=пн, 5=сб, 6=вс
 
@@ -407,10 +442,6 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
             continue
         if symbol in config.TV_ONLY_SYMBOLS and wd >= 5:
             logger.debug(f"{symbol} пропуск — выходной (форекс/индексы)")
-            continue
-
-        data = _analyze(symbol)
-        if data is None:
             continue
 
         is_tv   = symbol in config.TV_ONLY_SYMBOLS

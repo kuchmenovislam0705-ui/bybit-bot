@@ -81,21 +81,30 @@ def get() -> Dict:
     """
     Возвращает макро-срез: price, chg_15m, chg_1h для каждого инструмента.
     Источник: TradingView (primary) / yfinance (fallback).
-    Кешируется 15 минут.
+    Кешируется 15 минут. Все 5 символов фетчатся параллельно.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     now = time.time()
     if now - _cache["ts"] < _CACHE_TTL and _cache["data"]:
         return _cache["data"]
 
     data: Dict = {}
-    for key in _YF_TICKERS:
+
+    def _fetch_one(key: str):
         closes = _fetch(key)
         if closes and len(closes) >= 2:
-            data[key] = {
+            return key, {
                 "price":   round(closes[-1], 4),
                 "chg_15m": round(_chg(closes, 1), 3),
                 "chg_1h":  round(_chg(closes, 4), 3),
             }
+        return key, None
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        for key, val in ex.map(_fetch_one, _YF_TICKERS.keys()):
+            if val:
+                data[key] = val
 
     _cache["ts"]   = now
     _cache["data"] = data

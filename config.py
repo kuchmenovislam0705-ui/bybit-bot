@@ -62,7 +62,7 @@ RVOL_PERIOD = 20
 KLINE_LIMIT = 120   # 120 × 5M = 10 часов истории
 
 # ── Приложение ────────────────────────────────────────────────────────────────
-SCAN_INTERVAL = 300   # 5 минут — один скан = одна свеча 5M
+SCAN_INTERVAL = 60    # 60 секунд — быстрый скальпинг
 MAX_WORKERS   = 4
 STATE_FILE    = os.path.join(os.path.dirname(__file__), "state.json")
 LOG_FILE      = os.path.join(os.path.dirname(__file__), "bot.log")
