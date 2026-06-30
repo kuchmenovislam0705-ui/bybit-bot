@@ -402,7 +402,7 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
 
     is_asian_hour = utc_hour < 7 or utc_hour >= 20
     adx_thresh    = 15 if is_asian_hour else config.MIN_ADX
-    score_thresh  = adaptive_min + (1 if is_asian_hour else 0)
+    score_thresh  = adaptive_min  # без пенальти за азиатскую сессию
     corr_xau_xag  = float(corr_data.get("corr_xau_xag") or 0.0)
     logger.info(
         f"Гео: {geo_dir} ({geo_score:+.2f}) | "
@@ -477,8 +477,8 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
             if atr_pct < 0.015:
                 logger.debug(f"{symbol} пропуск ATR%={atr_pct:.3f}%")
                 continue
-            if rvol < 0.40:
-                logger.debug(f"{symbol} пропуск RVOL={rvol:.2f} < 0.40")
+            if rvol < 0.25:
+                logger.debug(f"{symbol} пропуск RVOL={rvol:.2f} < 0.25")
                 continue
 
         price   = data["price"]
@@ -567,8 +567,18 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
 
         # ── ЛОНГ ─────────────────────────────────────────────────────────────
         min_score  = config.FOREX_MIN_SCORE if is_fx else score_thresh
-        # Форекс: тренд-фильтр мягче — достаточно нейтрального 15M
-        trend_ok_l = (trend_1h >= 0) if is_fx else ((trend_1h == 1) or (trend_4h == 1 and trend_1h >= 0))
+        pdi = float(data.get("pdi") or 0.0)
+        mdi = float(data.get("mdi") or 0.0)
+        # DI-тренд: более быстрый чем EMA, работает в сильных движениях
+        di_bull = pdi > mdi + 8       # +DI доминирует → бычий DI-тренд
+        di_bear = mdi > pdi + 8       # -DI доминирует → медвежий DI-тренд
+        extreme_oversold = rsi < 30 and float(data.get("stoch", {}).get("k", 50) or 50) < 20
+        # Форекс: тренд-фильтр мягче; металлы/BTC: DI-тренд как дополнительный источник
+        if is_fx:
+            trend_ok_l = trend_1h >= 0
+        else:
+            trend_ok_l = ((trend_1h == 1) or (trend_4h == 1 and trend_1h >= 0)
+                          or di_bull or extreme_oversold)
         rsi_ok_l   = rsi < 65
 
         if trend_ok_l and rsi_ok_l:
@@ -621,8 +631,13 @@ def run_all() -> Tuple[List[Dict], List[Dict]]:
                 )
 
         # ── ШОРТ ─────────────────────────────────────────────────────────────
-        trend_ok_s = (trend_1h <= 0) if is_fx else ((trend_1h == -1) or (trend_4h == -1 and trend_1h <= 0))
-        rsi_ok_s   = rsi > 35
+        if is_fx:
+            trend_ok_s = trend_1h <= 0
+        else:
+            trend_ok_s = ((trend_1h == -1) or (trend_4h == -1 and trend_1h <= 0)
+                          or di_bear)
+        # В сильном тренде (ADX>35, -DI доминирует) RSI может оставаться низким
+        rsi_ok_s   = rsi > 35 or (adx > 35 and di_bear and rsi > 15)
 
         if trend_ok_s and rsi_ok_s:
             daily_b_s  = 2 if daily_trend == -1 else (-1 if daily_trend == 1 else 0)
